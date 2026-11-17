@@ -2071,6 +2071,12 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         if ((device->architecture == AMD_GCN) && (device->driver_id != vk::DriverId::eAmdProprietary)) {
             m_warptile_mmq = m_warptile_mmq_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
             m_warptile_mmqid = m_warptile_mmqid_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
+        } else if ((device->architecture == AMD_GCN) && !device->coopmat_support) {
+            // [sd-tuning] GCN (Polaris, RX 570) on the AMD proprietary driver, no fp16 / coopmat:
+            // measured 1.77 -> 2.85 TFLOPS (q8_0) and 1.87 -> 2.65 / 1.33 -> 2.38 TFLOPS (f32)
+            // on 2048..8192 x 3952 matmuls with 256-thread workgroups and 4x4 outputs per thread.
+            m_warptile     = { 256, 64, 64, 16, 16, 32, 2, 2, 2, 1, 32 };
+            m_warptile_mmq = { 256, 64, 64, 16, 16, 16, 2, 2, 2, 1, 16 };
         } else if (device->vendor_id == VK_VENDOR_ID_AMD && device->coopmat_support && ggml_vk_amd_large_tile_supported(device)) {
             // This is intentionally using tx_m values, slight performance increase
             l_warptile = { 256, 128, 128, 16, mm_warp_8, 64, 2, tm_m, tn_m, tk_m, mm_warp_8 };
@@ -2100,6 +2106,26 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
                 l_mmq_wg_denoms = { 128, 256, 1 };
                 l_align         = 32;  //set as BK
             }
+        }
+
+        // [sd-tuning] experimental overrides for the medium (non-coopmat) warptiles, for tile sweeps.
+        // Format: "BLOCK_SIZE,BM,BN,BK,WM,WN,WMITER,TM,TN,TK,WARP"
+        {
+            auto env_tile = [](const char * name, std::vector<uint32_t>& wt, std::array<uint32_t, 3>& denoms) {
+                const char * v = getenv(name);
+                if (v == nullptr || !*v) return;
+                std::vector<uint32_t> t;
+                std::stringstream ss(v);
+                std::string item;
+                while (std::getline(ss, item, ',')) t.push_back((uint32_t)std::stoul(item));
+                if (t.size() != 11) { std::cerr << "ggml_vulkan: " << name << " needs 11 values" << std::endl; return; }
+                wt = t;
+                denoms = { t[1], t[2], 1 };
+                std::cerr << "ggml_vulkan: " << name << " override = " << v << std::endl;
+            };
+            env_tile("GGML_VK_WARPTILE_M", m_warptile, m_wg_denoms);
+            env_tile("GGML_VK_WARPTILE_MMQ_M", m_warptile_mmq, m_mmq_wg_denoms);
+            if (const char * v = getenv("GGML_VK_ALIGN_M")) { m_align = (uint32_t)std::stoul(v); }
         }
 
         const bool use_cm1_int = device->coopmat_int_support &&
@@ -3743,7 +3769,8 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_silu_back_f32, "silu_back_f32", silu_back_f32_len, silu_back_f32_data, "main", 3, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
 
     ggml_vk_create_pipeline(device, device->pipeline_soft_max_f32, "soft_max_f32", soft_max_f32_len, soft_max_f32_data, "main", 4, sizeof(vk_op_soft_max_push_constants), {1, 1, 1}, { device->subgroup_size }, 1);
-    ggml_vk_create_pipeline(device, device->pipeline_soft_max_f32_wg512, "soft_max_f32_wg512", soft_max_f32_len, soft_max_f32_data, "main", 4, sizeof(vk_op_soft_max_push_constants), {1, 1, 1}, { 512 }, 1);
+    const uint32_t sm_wide_wg = getenv("GGML_VK_SOFTMAX_WG") ? (uint32_t)atoi(getenv("GGML_VK_SOFTMAX_WG")) : 512u; // [sd-tuning]
+    ggml_vk_create_pipeline(device, device->pipeline_soft_max_f32_wg512, "soft_max_f32_wg512", soft_max_f32_len, soft_max_f32_data, "main", 4, sizeof(vk_op_soft_max_push_constants), {1, 1, 1}, { sm_wide_wg }, 1);
     ggml_vk_create_pipeline(device, device->pipeline_soft_max_f32_f16, "soft_max_f32_f16", soft_max_f32_f16_len, soft_max_f32_f16_data, "main", 4, sizeof(vk_op_soft_max_push_constants), {1, 1, 1}, { device->subgroup_size }, 1);
     ggml_vk_create_pipeline(device, device->pipeline_soft_max_f32_f16_wg512, "soft_max_f32_f16_wg512", soft_max_f32_f16_len, soft_max_f32_f16_data, "main", 4, sizeof(vk_op_soft_max_push_constants), {1, 1, 1}, { 512 }, 1);
     ggml_vk_create_pipeline(device, device->pipeline_soft_max_back_f32, "soft_max_back_f32", soft_max_back_f32_len, soft_max_back_f32_data, "main", 3, sizeof(vk_op_push_constants), {1, 1, 1}, { device->subgroup_size }, 1, true);
