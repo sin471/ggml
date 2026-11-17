@@ -13438,6 +13438,21 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     std::vector<std::unique_ptr<test_case>> test_cases;
 
+    // [sd-tuning] Anima DiT shapes at 832x1216 (3952 tokens); set GGML_TEST_ANIMA=1 to run only these
+    if (getenv("GGML_TEST_ANIMA") != nullptr) {
+        const char * wa = getenv("GGML_TEST_ANIMA_TYPE");
+        ggml_type ta = GGML_TYPE_Q8_0;
+        if (wa && strcmp(wa, "f16") == 0) ta = GGML_TYPE_F16;
+        if (wa && strcmp(wa, "f32") == 0) ta = GGML_TYPE_F32;
+        test_cases.emplace_back(new test_mul_mat(ta, GGML_TYPE_F32, 2048, 3952, 2048, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(ta, GGML_TYPE_F32, 8192, 3952, 2048, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(ta, GGML_TYPE_F32, 2048, 3952, 8192, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 3952, 3952, 128, {16, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 128, 3952, 3952, {16, 1}, {1, 1}));
+        test_cases.emplace_back(new test_soft_max(GGML_TYPE_F32, {3952, 3952, 16, 1}, false, false, GGML_TYPE_F32, {1, 1}, 0.0884f, 0.0f, true));
+        return test_cases;
+    }
+
     for (float n : {128.0f, 4096.0f, 32768.0f, 1048576.0f}) {
         test_cases.emplace_back(new test_arange(GGML_TYPE_F32, 0.0f, n, 1.0f));
     }
